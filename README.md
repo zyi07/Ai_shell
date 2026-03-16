@@ -1,2 +1,2 @@
 # Ai_shell
-使用Ai写的shell脚本备份
+项目中使用Ai写的自用shell脚本备份
