@@ -36,9 +36,15 @@ PID 文件记录方式，采用基于 /proc 文件系统、lsof 端口检测和 
 
 
 # upgrade_dm_driver.sh 和 rollback_dm_driver.sh （感谢Qwen3.5 plus）
-脚本名称: upgrade_dm_driver.sh
 功能描述: 批量替换达梦数据库驱动(Driver)与方言(Dialect)文件，并自动备份旧版本。
 请在执行前确认 NEW_DRIVER 和 NEW_DIALECT 路径正确。
 
 脚本名称: rollback_dm_driver.sh
 功能描述: 紧急回滚达梦数据库驱动与方言文件到最近的备份版本。
+
+
+
+# init_server.sh （感谢Qwen3.5 plus）
+Linux 服务器自动化初始化与加固工具
+
+适用于 CentOS / Rocky / AlmaLinux / Ubuntu / Kylin (麒麟) / UOS (统信) 等主流 Linux 发行版。它通过交互式的问答引导，自动完成从网络配置到安全加固的全套流程，确保每一台新上线的服务器都符合统一的安全基线和运维规范。
