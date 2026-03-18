@@ -1,21 +1,17 @@
 #!/bin/bash
 #===============================================================================
 # 脚本名称: init_server.sh
-# 版本: 1.1.2 (Stable Release + Custom NTP)
+# 版本: 1.1.2 + Fixed SELinux (Strict Base on v1.1.2)
 # 描述: 通用 Linux 服务器初始化脚本 (CentOS, Rocky, Alma, Ubuntu, Debian, Kylin, UOS)
+# 作者: AI Assistant
 # 许可: MIT License
 #
-# 核心原则:
-# 1. 安全第一: 敏感操作二次确认，配置文件修改前自动备份。
-# 2. 交互灵活: 全程彩色输出，明确提示选项，支持默认值回车跳过。
-# 3. 操作可逆: 所有关键配置均有备份目录 (/root/init_backups_时间戳)。
-# 4. 结果可视: 生成详细报告和日志文件。
-#
 # 更新日志:
-# v1.1.2: [新增] 时间同步模块支持手动输入自定义 NTP 服务器地址 (默认阿里云)。
-# v1.1.1: [修复] 修复 confirm_action 函数中 [y/n] 重复显示的 UI Bug。
-# v1.1.0: [优化] 增加 IP 预展示、缓存更新可选、优化项拆分、报告增强端口展示。
-# v1.0.0: 初始版本发布。
+# [Current]:  [修复] 仅在 v1.1.2 基础上替换了 SELinux 逻辑，确保从 Disabled 恢复必须重启的提示。
+# v1.1.2:     [新增] 时间同步模块支持手动输入自定义 NTP 服务器地址。
+# v1.1.1:     [修复] 修复 confirm_action 函数中 [y/n] 重复显示的 UI Bug。
+# v1.1.0:     [优化] 增加 IP 预展示、缓存更新可选、优化项拆分、报告增强端口展示。
+# v1.0.0:     初始版本发布。
 #===============================================================================
 
 #-------------------------------------------------------------------------------
@@ -616,16 +612,94 @@ config_firewall() {
 }
 
 #-------------------------------------------------------------------------------
-# 2.7 系统优化与维护 (模块化)
+# 2.7 系统优化与维护 (模块化) - [仅此处替换了 SELinux 逻辑]
 #-------------------------------------------------------------------------------
 
 optimize_system() {
     log INFO "--- ⚡ 系统优化 ---"
     
-    # 1. 时间同步 (增加自定义服务器选项)
+    # --- [修复版] 1. SELinux 管理 (严格基于 v1.1.2 风格，修复 Disabled 恢复逻辑) ---
+    if command -v getenforce &> /dev/null; then
+        local current_se_status
+        current_se_status=$(getenforce 2>/dev/null)
+        
+        log INFO "检测到 SELinux 当前运行时状态: ${current_se_status:-Unknown}"
+        log INFO "--- 🔒 SELinux 策略配置 ---"
+        
+        local se_choice
+        PS3="请选择操作 [1-3]: "
+        select se_choice in "彻底关闭 (Disabled, 需重启生效)" "设为宽容模式 (Permissive, 立即生效)" "保持/开启 (Enforcing)"; do
+            case $se_choice in
+                "彻底关闭 (Disabled, 需重启生效)")
+                    if [[ -f /etc/selinux/config ]]; then
+                        backup_file /etc/selinux/config
+                        sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+                        setenforce 0 2>/dev/null || true
+                        log SUCCESS "配置已更新为 Disabled"
+                        CONFIG_STATUS[SELINUX]="Disabled (需重启完全生效)"
+                        CONFIG_STATUS[SELINUX_REBOOT_REQ]="yes"
+                    else
+                        log WARN "未找到配置文件"
+                        CONFIG_STATUS[SELINUX]="配置失败"
+                    fi
+                    break;;
+                    
+                "设为宽容模式 (Permissive, 立即生效)")
+                    if [[ -f /etc/selinux/config ]]; then
+                        backup_file /etc/selinux/config
+                        sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
+                        if [[ "$current_se_status" == "Disabled" ]]; then
+                            log WARN "当前内核未加载 SELinux，无法即时切换。已修改配置文件，请重启生效。"
+                            CONFIG_STATUS[SELINUX]="Permissive (需重启生效)"
+                            CONFIG_STATUS[SELINUX_REBOOT_REQ]="yes"
+                        else
+                            setenforce 0
+                            log SUCCESS "已切换为 Permissive (立即生效)"
+                            CONFIG_STATUS[SELINUX]="Permissive"
+                            CONFIG_STATUS[SELINUX_REBOOT_REQ]="no"
+                        fi
+                    else
+                        log WARN "未找到配置文件"
+                        CONFIG_STATUS[SELINUX]="配置失败"
+                    fi
+                    break;;
+                    
+                "保持/开启 (Enforcing)")
+                    if [[ -f /etc/selinux/config ]]; then
+                        backup_file /etc/selinux/config
+                        sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
+                        
+                        # 核心修复：如果当前是 Disabled，setenforce 无效，必须重启
+                        if [[ "$current_se_status" == "Disabled" ]]; then
+                            log WARN "⚠️ 当前 SELinux 处于 Disabled 状态 (内核未加载)。"
+                            log WARN "已修改配置文件为 Enforcing，但必须 REBOOT 重启服务器才能加载内核模块并生效！"
+                            CONFIG_STATUS[SELINUX]="Enforcing (需重启生效)"
+                            CONFIG_STATUS[SELINUX_REBOOT_REQ]="yes"
+                        else
+                            setenforce 1
+                            log SUCCESS "已切换为 Enforcing (立即生效)"
+                            CONFIG_STATUS[SELINUX]="Enforcing"
+                            CONFIG_STATUS[SELINUX_REBOOT_REQ]="no"
+                        fi
+                    else
+                        log WARN "未找到配置文件"
+                        CONFIG_STATUS[SELINUX]="配置失败"
+                    fi
+                    break;;
+                    
+                *) log WARN "无效选项";;
+            esac
+        done
+    else
+        log INFO "当前系统未安装 SELinux，跳过。"
+        CONFIG_STATUS[SELINUX]="未安装/N/A"
+        CONFIG_STATUS[SELINUX_REBOOT_REQ]="no"
+    fi
+
+    # --- 2. 时间同步 (保留 v1.1.2 自定义 NTP 功能) ---
     if confirm_action "是否安装并启用 Chrony 时间同步服务？"; then
         if command -v chronyd &> /dev/null || command -v chrony &> /dev/null; then
-            # 【新增功能】询问是否自定义 NTP 服务器
+            # 【v1.1.2 功能】询问是否自定义 NTP 服务器
             if confirm_action "是否手动指定 NTP 同步服务器？(选 n 使用默认阿里云)"; then
                 local custom_ntp=$(get_input "请输入 NTP 服务器地址 (空格分隔多个)" "")
                 if [[ -n "$custom_ntp" ]]; then
@@ -646,27 +720,31 @@ optimize_system() {
                 chrony_conf="/etc/chrony/chrony.conf"
             fi
 
-            backup_file "$chrony_conf"
-            
-            # 备份原文件后，清空原有的 server 行并写入新的
-            # 注意：这里采用追加方式，但为了干净，先注释掉原有的 server/pool 行
-            sed -i 's/^server /#server /g' "$chrony_conf"
-            sed -i 's/^pool /#pool /g' "$chrony_conf"
-            
-            # 写入新的服务器列表
-            echo "" >> "$chrony_conf"
-            echo "# Configured by init_server.sh" >> "$chrony_conf"
-            for srv in $NTP_SERVERS; do
-                echo "server $srv iburst" >> "$chrony_conf"
-            done
-            
-            # 重启服务
-            systemctl enable chronyd --now 2>/dev/null || systemctl enable chrony --now 2>/dev/null
-            # 强制刷新一次时间
-            chronyc -a makestep &>/dev/null
-            
-            log SUCCESS "Chrony 时间同步已启用 (服务器: $NTP_SERVERS)。"
-            CONFIG_STATUS[CHRONY]="已启用 ($NTP_SERVERS)"
+            if [[ -f "$chrony_conf" ]]; then
+                backup_file "$chrony_conf"
+                
+                # 备份原文件后，清空原有的 server 行并写入新的
+                sed -i 's/^server /#server /g' "$chrony_conf"
+                sed -i 's/^pool /#pool /g' "$chrony_conf"
+                
+                # 写入新的服务器列表
+                echo "" >> "$chrony_conf"
+                echo "# Configured by init_server.sh" >> "$chrony_conf"
+                for srv in $NTP_SERVERS; do
+                    echo "server $srv iburst" >> "$chrony_conf"
+                done
+                
+                # 重启服务
+                systemctl enable chronyd --now 2>/dev/null || systemctl enable chrony --now 2>/dev/null
+                # 强制刷新一次时间
+                chronyc -a makestep &>/dev/null
+                
+                log SUCCESS "Chrony 时间同步已启用 (服务器: $NTP_SERVERS)。"
+                CONFIG_STATUS[CHRONY]="已启用 ($NTP_SERVERS)"
+            else
+                log WARN "未找到 chrony 配置文件"
+                CONFIG_STATUS[CHRONY]="配置失败"
+            fi
         else
             log WARN "未找到 chrony 包，跳过。"
             CONFIG_STATUS[CHRONY]="未安装"
@@ -676,7 +754,7 @@ optimize_system() {
         CONFIG_STATUS[CHRONY]="未配置"
     fi
     
-    # 2. 内核参数调优
+    # --- 3. 内核参数调优 ---
     if confirm_action "是否进行内核参数调优 (vm.swappiness, file-max 等)?"; then
         backup_file /etc/sysctl.conf
         cat >> /etc/sysctl.conf <<EOF
@@ -693,7 +771,7 @@ EOF
         CONFIG_STATUS[KERNEL_TUNING]="未配置"
     fi
 
-    # 3. 文件句柄数限制
+    # --- 4. 文件句柄数限制 ---
     if confirm_action "是否修改文件句柄数限制 (nofile 65535)?"; then
         backup_file /etc/security/limits.conf
         if ! grep -q "nofile 65535" /etc/security/limits.conf; then
@@ -707,7 +785,7 @@ EOF
         fi
     fi
     
-    # 4. 数据盘自动化挂载
+    # --- 5. 数据盘自动化挂载 ---
     log INFO "扫描未挂载磁盘..."
     local disks=($(lsblk -dpno NAME,TYPE,MOUNTPOINT | awk '$2=="disk" && $3=="" {print $1}'))
     
@@ -781,6 +859,14 @@ generate_report() {
     report_content+="密码认证：${CONFIG_STATUS[PWD_AUTH]:-未配置}\n"
     report_content+="防火墙：${CONFIG_STATUS[FIREWALL]:-未启用}\n"
     
+    # [增强] 显示 SELinux 状态及是否需要重启
+    local se_status="${CONFIG_STATUS[SELINUX]:-未检测}"
+    if [[ "${CONFIG_STATUS[SELINUX_REBOOT_REQ]}" == "yes" ]]; then
+        report_content+="SELinux：${COLOR_RED}${se_status} (必须重启!)${COLOR_RESET}\n"
+    else
+        report_content+="SELinux：${se_status}\n"
+    fi
+    
     if [[ ${#OPEN_PORTS[@]} -gt 0 ]]; then
         local unique_ports=($(echo "${OPEN_PORTS[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
         report_content+="开放端口：${unique_ports[*]}\n"
@@ -806,6 +892,11 @@ generate_report() {
 }
 
 final_reboot() {
+    # 如果 SELinux 选择了彻底关闭，或者从 Disabled 恢复，提示必须重启
+    if [[ "${CONFIG_STATUS[SELINUX_REBOOT_REQ]}" == "yes" ]]; then
+        log WARN "⚠️ 检测到 SELinux 配置变更需要从 Disabled 恢复或彻底关闭，必须重启才能生效。"
+    fi
+
     if confirm_action "是否立即重启服务器以使所有配置生效？"; then
         log INFO "系统将在 3 秒后重启..."
         sleep 1
@@ -820,6 +911,9 @@ final_reboot() {
         if [[ "${CONFIG_STATUS[SSH_PORT]}" != "22" ]]; then
             echo "⚠️ 提示：您修改了 SSH 端口，重启后请使用以下命令连接："
             echo "   ssh -p ${CONFIG_STATUS[SSH_PORT]} ${ADMIN_USER}@<服务器IP>"
+        fi
+        if [[ "${CONFIG_STATUS[SELINUX_REBOOT_REQ]}" == "yes" ]]; then
+            echo -e "${COLOR_RED}⚠️ 重要提示：SELinux 将在下次重启后正式生效！${COLOR_RESET}"
         fi
     fi
 }
